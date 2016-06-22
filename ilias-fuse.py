@@ -29,6 +29,7 @@ import pathlib
 from fusepy.fuse import FUSE, FuseOSError, Operations, LoggingMixIn
 from errno import *
 import stat
+import argparse
 
 class InvalidCredentialsError(ValueError): pass
 
@@ -203,11 +204,13 @@ class IliasFS(LoggingMixIn, Operations):
             raise FuseOSError(ENOENT)
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print('usage: %s <mountpoint>' % sys.argv[0])
-        exit(1)
+    parser = argparse.ArgumentParser(description = "At last, a FUSE filesystem for the ILIAS installation at KIT")
+    parser.add_argument('mountpoint', type=str, help="where to mount this filesystem")
+    parser.add_argument('--foreground', action='store_true', help="do not fork away to background")
+    parser.add_argument('--log-level', type=str, default=logging.getLevelName(logging.INFO), choices=logging._nameToLevel.keys(), help="adjust the verbosity of logging")
+    args = parser.parse_args()
 
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging._nameToLevel[args.log_level])
 
     dashboard = IliasDashboard()
-    fuse = FUSE(IliasFS(sys.argv[1], dashboard), sys.argv[1], foreground=True)
+    fuse = FUSE(IliasFS(args.mountpoint, dashboard), args.mountpoint, foreground=args.foreground)
