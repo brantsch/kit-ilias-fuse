@@ -28,6 +28,7 @@ import sys
 import pathlib
 from fusepy.fuse import FUSE, FuseOSError, Operations, LoggingMixIn
 from errno import *
+import time
 import stat
 import argparse
 
@@ -124,6 +125,8 @@ class Folder(IliasNode):
     pass
 
 class File(IliasNode):
+    max_content_age = 15*60
+
     def __init__(self, name, url, ilias_session):
         """
         Due to horrible botchery both on my part and at ILIAS, the name
@@ -134,10 +137,16 @@ class File(IliasNode):
         headers = response.headers
         self.size = int(headers['Content-Length']) #FIXME: ILIAS seems to return bogus sizes for some text files.
         self.name = headers['Content-Description']
+        self.content = None
+        self.content_timestamp = 0
 
     def download(self, size, offset):
-        response = self.session.get(self.url)
-        return response.content[offset:offset+size]
+        now = time.time()
+        if not self.content or now - self.content_timestamp > self.max_content_age:
+            response = self.session.get(self.url)
+            self.content = response.content
+            self.content_timestamp = now
+        return self.content[offset:offset+size]
 
 class IliasDashboard(IliasNode):
     def __init__(self):
