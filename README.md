@@ -1,3 +1,6 @@
+#BROKEN – DO NOT USE
+After the KIT rolled out a new version of ILIAS, this crude hack stopped working, and I did not yet get around to fix it.
+
 #ilias-fuse
 *Finally, a FUSE filesystem for the ILIAS installation at the KIT!*
 It enables you to mount your view of ILIAS on some directory so that you
@@ -7,9 +10,19 @@ manager and access them (almost) like local files.
 #Cloning
 Please use `git clone --recursive` to initialize the fusepy submodule right away.
 
+#Dependencies
+- requests
+- BeautifulSoup
+- and, of course, Python 3
+
 #Usage
 ```
 % ilias-fuse.py /path/to/your/mountpoint
+```
+
+For advanced options, see the output of
+```
+% ilias-fuse.py --help
 ```
 
 #Caveats
