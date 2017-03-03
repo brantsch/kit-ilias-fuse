@@ -180,7 +180,7 @@ class File(IliasNode):
         properties = html_list_item.select("span.il_ItemProperty")
         ext = properties[0].text.strip()
         self.name = self.name + "." + ext.strip()
-        self.size = self.human2bytes(properties[1].text)
+        self.size = self.human2bytes(properties[1].text) # Approximate file size
 
     @staticmethod
     def human2bytes(s):
@@ -203,6 +203,9 @@ class File(IliasNode):
         response = self.session.get(self.url)
         content = response.content
         cache.put(self, content)
+        # Update size because size from overview is only approximate
+        # Apparently this works
+        self.size = len(content)
         return content[offset:offset + size]
 
 
