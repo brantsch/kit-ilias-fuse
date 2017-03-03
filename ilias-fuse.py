@@ -101,7 +101,7 @@ class IliasSession(requests.Session):
             "j_password": password,
             "_eventId_proceed": ""
         })
-        login_soup = BeautifulSoup(login_response.text)
+        login_soup = BeautifulSoup(login_response.text, 'lxml')
         saml_response = None
         relay_state = None
         try:
@@ -146,7 +146,7 @@ class IliasNode(object):
     def get_children(self):
         if not self.__children:
             node_page = self.session.get(self.url).text
-            soup = BeautifulSoup(node_page)
+            soup = BeautifulSoup(node_page, 'lxml')
             child_anchors = soup.select("a.il_ContainerItemTitle")
             for a in child_anchors:
                 try:
