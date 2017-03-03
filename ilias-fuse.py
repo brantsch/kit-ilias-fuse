@@ -36,6 +36,7 @@ import locale
 import datetime
 import time
 
+
 @contextmanager
 def setlocale(name):
     saved = locale.setlocale(locale.LC_ALL)
@@ -50,6 +51,7 @@ class Cache(object):
         def __init__(self, file, data):
             self.file = file
             self.data = data
+            self.time = time.time()
 
         def __eq__(self, other):
             return (self.file == other and type(other) == File) or (
@@ -57,8 +59,9 @@ class Cache(object):
 
     cache = list()
 
-    def __init__(self, capacity):
+    def __init__(self, capacity, timeout):
         self.capacity = capacity
+        self.cache_timeout = timeout
 
     def put(self, file, data):
         c = self.CashedFile(file, data)
@@ -72,7 +75,10 @@ class Cache(object):
 
     def get(self, file):
         if file in self.cache:
-            self.cache.append(self.cache.pop(self.cache.index(file)))
+            obj = self.cache.pop(self.cache.index(file))
+            if time.time() - obj.time > self.cache_timeout:
+                return None
+            self.cache.append(obj)
             return self.cache[len(self.cache) - 1].data
         return None
 
@@ -313,10 +319,11 @@ if __name__ == "__main__":
     parser.add_argument('--log-level', type=str, default=logging.getLevelName(logging.INFO),
                         choices=logging._nameToLevel.keys(), help="adjust the verbosity of logging")
     parser.add_argument('--cache', type=int, default=50, help='File cache in MB')
+    parser.add_argument('--cache-timeout', type=float, default=30, help='File cache timeout in minutes')
     args = parser.parse_args()
 
     logging.basicConfig(level=logging._nameToLevel[args.log_level])
 
     dashboard = IliasDashboard()
-    cache = Cache(capacity=args.cache)
+    cache = Cache(capacity=args.cache, timeout=int(args.cache_timeout * 60))
     fuse = FUSE(IliasFS(args.mountpoint, dashboard), args.mountpoint, foreground=args.foreground)
