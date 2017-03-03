@@ -26,12 +26,14 @@ import re
 import os
 import sys
 import pathlib
-from fusepy.fuse import FUSE, FuseOSError, Operations, LoggingMixIn
+from fusepy import FUSE, FuseOSError, Operations, LoggingMixIn
 from errno import *
 import stat
 import argparse
 
+
 class InvalidCredentialsError(ValueError): pass
+
 
 class IliasSession(requests.Session):
     """
@@ -54,13 +56,13 @@ class IliasSession(requests.Session):
             "idp_selection": "https://idp.scc.kit.edu/idp/shibboleth",
             "target": "https://ilias.studium.kit.edu/shib_login.php?target=",
             "home_organization_selection": "Mit KIT-Account anmelden"
-            })
+        })
         jsessionid = self.cookies.get("JSESSIONID")
         login_response = self.post(session_establishment_response.url, data={
             "j_username": username,
             "j_password": password,
             "_eventId_proceed": ""
-            })
+        })
         login_soup = BeautifulSoup(login_response.text)
         saml_response = None
         relay_state = None
@@ -68,11 +70,13 @@ class IliasSession(requests.Session):
             saml_response = login_soup.find("input", attrs={"name": "SAMLResponse"}).get("value")
             relay_state = login_soup.find("input", attrs={"name": "RelayState"}).get("value")
         except AttributeError as e:
-            raise InvalidCredentialsError("Username and/or password most likely invalid. (SAML response could not be found.)") from e
+            raise InvalidCredentialsError(
+                "Username and/or password most likely invalid. (SAML response could not be found.)") from e
         self.post("https://ilias.studium.kit.edu/Shibboleth.sso/SAML2/POST", data={
             "SAMLResponse": saml_response,
             "RelayState": relay_state
-            })
+        })
+
 
 class IliasNode():
     @staticmethod
@@ -81,10 +85,10 @@ class IliasNode():
         Call this method to get an instance of the appropriate subclass of IliasNode for the given *url*.
         """
         type_mapping = {
-                re.compile(r"https://ilias.studium.kit.edu/goto_produktiv_crs_\d+\.html"): Course,
-                re.compile(r"https://ilias.studium.kit.edu/goto_produktiv_fold_\d+\.html"): Folder,
-                re.compile(r"ilias.php?.*cmd=sendfile.*"): File
-                }
+            re.compile(r"https://ilias.studium.kit.edu/goto_produktiv_crs_\d+\.html"): Course,
+            re.compile(r"https://ilias.studium.kit.edu/goto_produktiv_fold_\d+\.html"): Folder,
+            re.compile(r"ilias.php?.*cmd=sendfile.*"): File
+        }
         first_match = next(filter(None, map(lambda r: r.match(url), type_mapping.keys())), None)
         cls = IliasNode
         if first_match:
@@ -92,7 +96,8 @@ class IliasNode():
         return cls(name, url, ilias_session)
 
     def __repr__(self):
-        return "{}(name={self.name}, url={self.url}, ilias_session={self.session})".format(type(self).__name__, self=self)
+        return "{}(name={self.name}, url={self.url}, ilias_session={self.session})".format(type(self).__name__,
+                                                                                           self=self)
 
     def __init__(self, name, url, ilias_session):
         self.session = ilias_session
@@ -117,11 +122,14 @@ class IliasNode():
         self.get_children()
         return self.__children.get(name)
 
+
 class Course(IliasNode):
     pass
 
+
 class Folder(IliasNode):
     pass
+
 
 class File(IliasNode):
     def __init__(self, name, url, ilias_session):
@@ -129,19 +137,23 @@ class File(IliasNode):
         Due to horrible botchery both on my part and at ILIAS, the name
         attribute will be ignored and replaced by the proper full filename.
         """
-        super().__init__(name, "https://ilias.studium.kit.edu/"+url, ilias_session)
+        super().__init__(name, "https://ilias.studium.kit.edu/" + url, ilias_session)
         response = self.session.head(self.url)
         headers = response.headers
-        self.size = int(headers['Content-Length']) #FIXME: ILIAS seems to return bogus sizes for some text files.
+        self.size = int(headers['Content-Length'])  # FIXME: ILIAS seems to return bogus sizes for some text files.
         self.name = headers['Content-Description']
 
     def download(self, size, offset):
         response = self.session.get(self.url)
-        return response.content[offset:offset+size]
+        return response.content[offset:offset + size]
+
 
 class IliasDashboard(IliasNode):
     def __init__(self):
-        super().__init__("Dashboard", "https://ilias.studium.kit.edu/ilias.php?baseClass=ilPersonalDesktopGUI&cmd=jumpToSelectedItems", IliasSession())
+        super().__init__("Dashboard",
+                         "https://ilias.studium.kit.edu/ilias.php?baseClass=ilPersonalDesktopGUI&cmd=jumpToSelectedItems",
+                         IliasSession())
+
 
 class IliasFS(LoggingMixIn, Operations):
     def __init__(self, root, dashboard):
@@ -170,7 +182,6 @@ class IliasFS(LoggingMixIn, Operations):
                 break
         return node
 
-
     def getattr(self, path, fh=None):
         node = self.__path_to_object(path)
         if node:
@@ -178,11 +189,11 @@ class IliasFS(LoggingMixIn, Operations):
             st_mode_ft_bits = stat.S_IFREG if is_file else stat.S_IFDIR
             st_mode_permissions = 0o444 if is_file else 0o555
             return {
-                    'st_mode': st_mode_ft_bits | st_mode_permissions,
-                    'st_uid': self.uid,
-                    'st_gid': self.gid,
-                    'st_size': node.size if is_file else 0
-                    }
+                'st_mode': st_mode_ft_bits | st_mode_permissions,
+                'st_uid': self.uid,
+                'st_gid': self.gid,
+                'st_size': node.size if is_file else 0
+            }
         else:
             raise FuseOSError(ENOENT)
 
@@ -203,11 +214,13 @@ class IliasFS(LoggingMixIn, Operations):
         else:
             raise FuseOSError(ENOENT)
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description = "At last, a FUSE filesystem for the ILIAS installation at KIT")
+    parser = argparse.ArgumentParser(description="At last, a FUSE filesystem for the ILIAS installation at KIT")
     parser.add_argument('mountpoint', type=str, help="where to mount this filesystem")
     parser.add_argument('--foreground', action='store_true', help="do not fork away to background")
-    parser.add_argument('--log-level', type=str, default=logging.getLevelName(logging.INFO), choices=logging._nameToLevel.keys(), help="adjust the verbosity of logging")
+    parser.add_argument('--log-level', type=str, default=logging.getLevelName(logging.INFO),
+                        choices=logging._nameToLevel.keys(), help="adjust the verbosity of logging")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging._nameToLevel[args.log_level])
