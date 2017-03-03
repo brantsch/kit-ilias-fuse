@@ -92,6 +92,10 @@ class Cache(object):
 class InvalidCredentialsError(ValueError): pass
 
 
+class IliasFSError(Exception):
+    pass
+
+
 class IliasSession(requests.Session):
     """
     Derivative of requests.Session for sessions at the ILIAS of Karlsruhe Institute of Technology.
@@ -101,6 +105,9 @@ class IliasSession(requests.Session):
     >>> session = IliasSession(username="your_username") #next you will be prompted for your password
     >>> session.get(some_course_url) #use it just like any requests.Session instance
     """
+
+    class LoginError(IliasFSError):
+        message = 'Error logging in to ilias.'
 
     def __init__(self, cache_timeout, username=None, password=None):
         super().__init__()
@@ -140,6 +147,15 @@ class IliasSession(requests.Session):
             "RelayState": relay_state
         })
 
+    def get_ensure_login(self, url):
+        resp = self.get(url, allow_redirects=False)
+        if resp.is_redirect:  # Try again
+            self.login()
+            resp = self.get(url, allow_redirects=False)
+            if resp.is_redirect:  # Didn't work...
+                raise IliasFSError()
+        return resp
+
 
 class IliasNode(object):
     @staticmethod
@@ -173,11 +189,7 @@ class IliasNode(object):
         if self.__children is None or self.__last_children_update < time.time() - self.session.cache_timeout:
             self.__last_children_update = time.time()
             self.__children = {}
-            node_page_req = self.session.get(self.url, allow_redirects=False)
-            if node_page_req.is_redirect:  # Keepalive
-                self.session.login()
-                node_page_req = self.session.get(self.url, allow_redirects=False)
-            node_page = node_page_req.text
+            node_page = self.session.get_ensure_login(self.url).text
             soup = BeautifulSoup(node_page, 'lxml')
             child_list_items = soup.select("div.il_ContainerListItem")
             for list_item in child_list_items:
@@ -235,11 +247,7 @@ class File(IliasNode):
         if file is not None:
             logging.info("Using cached file")
             return file[offset:offset + size]
-        response = self.session.get(self.url, allow_redirects=False)
-        if response.is_redirect:  # Ilias redirects to login form, if session expired when requesting a file...
-            self.session.login()
-            response = self.session.get(self.url, allow_redirects=False)  # ... so try again once.
-        content = response.content
+        content = self.session.get_ensure_login(self.url).content
         cache.put(self, content)
         # Update size because size from overview is only approximate
         # Apparently this works
