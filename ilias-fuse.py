@@ -96,7 +96,15 @@ class IliasFSError(Exception):
     def __init__(self, message=None):
         self.message = message
 
+
 class IliasFSNetworkError(IliasFSError): pass
+
+
+def raise_ilias_error_to_fuse(e):
+    logging.error(e)
+    if type(e) == IliasSession.LoginError:
+        raise FuseOSError(EACCES)
+    raise FuseOSError(EIO)
 
 
 class IliasSession(requests.Session):
@@ -111,6 +119,7 @@ class IliasSession(requests.Session):
 
     class LoginError(IliasFSError):
         message = 'Error logging in to ilias.'
+
         def __init__(self):
             pass
 
@@ -206,10 +215,10 @@ class IliasNode(object):
                 soup = BeautifulSoup(node_page, 'lxml')
                 child_list_items = soup.select("div.il_ContainerListItem")
                 for list_item in child_list_items:
-                        a = list_item.select("a.il_ContainerItemTitle")[0]
-                        child_node = IliasNode.create_instance(a.text, a.get("href"), self.session, list_item)
-                        logging.debug(child_node)
-                        self.__children[child_node.name] = child_node
+                    a = list_item.select("a.il_ContainerItemTitle")[0]
+                    child_node = IliasNode.create_instance(a.text, a.get("href"), self.session, list_item)
+                    logging.debug(child_node)
+                    self.__children[child_node.name] = child_node
             except Exception as e:
                 self.__children = None
                 raise IliasFSError(e)
@@ -291,8 +300,7 @@ class IliasFS(LoggingMixIn, Operations):
             else:
                 raise FuseOSError(ENOENT)
         except IliasFSError as e:
-            logging.error(e)
-            raise FuseOSError(EIO)
+            raise_ilias_error_to_fuse(e)
 
     def __path_to_object(self, path):
         """
@@ -324,8 +332,7 @@ class IliasFS(LoggingMixIn, Operations):
             else:
                 raise FuseOSError(ENOENT)
         except IliasFSError as e:
-            logging.error(e)
-            raise FuseOSError(EIO)
+            raise_ilias_error_to_fuse(e)
 
     getxattr = None
 
@@ -334,8 +341,7 @@ class IliasFS(LoggingMixIn, Operations):
             node = self.__path_to_object(path)
             return ['.', '..'] + [child.name for child in filter(lambda c: type(c) != IliasNode, node.get_children())]
         except IliasFSError as e:
-            logging.error(e)
-            raise FuseOSError(EIO)
+            raise_ilias_error_to_fuse(e)
 
     def read(self, path, size, offset, fh):
         try:
@@ -349,8 +355,7 @@ class IliasFS(LoggingMixIn, Operations):
             else:
                 raise FuseOSError(ENOENT)
         except IliasFSError as e:
-            logging.error(e)
-            raise FuseOSError(EIO)
+            raise_ilias_error_to_fuse(e)
 
 
 if __name__ == "__main__":
