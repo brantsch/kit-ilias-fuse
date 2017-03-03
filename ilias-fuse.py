@@ -87,7 +87,7 @@ class IliasNode():
         type_mapping = {
             re.compile(r"ilias.php\?.*cmdClass=ilrepositorygui.*"): Course,
             re.compile(r"ilias\.php\?.*cmd=view.*"): Folder,
-            re.compile(r"goto\.php\?.*target=file_[0-9]*_download.*"): File
+            re.compile(r"https://ilias.studium.kit.edu/goto\.php\?.*target=file_[0-9]*_download.*"): File
         }
         first_match = next(filter(None, map(lambda r: r.match(url), type_mapping.keys())), None)
         cls = IliasNode
@@ -124,20 +124,18 @@ class IliasNode():
 
 
 class Course(IliasNode):
-    pass
+    def __init__(self, name, url, ilias_session):
+        super().__init__(name, "https://ilias.studium.kit.edu/" + url, ilias_session)
 
 
 class Folder(IliasNode):
-    pass
+    def __init__(self, name, url, ilias_session):
+        super().__init__(name, "https://ilias.studium.kit.edu/" + url, ilias_session)
 
 
 class File(IliasNode):
     def __init__(self, name, url, ilias_session):
-        """
-        Due to horrible botchery both on my part and at ILIAS, the name
-        attribute will be ignored and replaced by the proper full filename.
-        """
-        super().__init__(name, "https://ilias.studium.kit.edu/" + url, ilias_session)
+        super().__init__(name, url, ilias_session)
         response = self.session.head(self.url)
         headers = response.headers
         self.size = int(headers['Content-Length'])  # FIXME: ILIAS seems to return bogus sizes for some text files.
