@@ -118,7 +118,7 @@ class IliasSession(requests.Session):
 
 class IliasNode(object):
     @staticmethod
-    def create_instance(name, url, ilias_session):
+    def create_instance(name, url, ilias_session, html_list_item):
         """
         Call this method to get an instance of the appropriate subclass of IliasNode for the given *url*.
         """
@@ -131,13 +131,13 @@ class IliasNode(object):
         cls = IliasNode
         if first_match:
             cls = type_mapping[first_match.re]
-        return cls(name, url, ilias_session)
+        return cls(name, url, ilias_session, html_list_item)
 
     def __repr__(self):
         return "{}(name={self.name}, url={self.url}, ilias_session={self.session})".format(type(self).__name__,
                                                                                            self=self)
 
-    def __init__(self, name, url, ilias_session):
+    def __init__(self, name, url, ilias_session, html_list_item):
         self.session = ilias_session
         self.name = name.replace("/", "-")
         self.url = url
@@ -147,13 +147,15 @@ class IliasNode(object):
         if not self.__children:
             node_page = self.session.get(self.url).text
             soup = BeautifulSoup(node_page, 'lxml')
-            child_anchors = soup.select("a.il_ContainerItemTitle")
-            for a in child_anchors:
+            child_list_items = soup.select("div.il_ContainerListItem")
+            for list_item in child_list_items:
                 try:
-                    child_node = IliasNode.create_instance(a.text, a.get("href"), self.session)
+                    a = list_item.select("a.il_ContainerItemTitle")[0]
+                    child_node = IliasNode.create_instance(a.text, a.get("href"), self.session, list_item)
+                    logging.debug(child_node)
                     self.__children[child_node.name] = child_node
-                except:
-                    pass
+                except Exception as e:
+                    logging.warn(e)
         return self.__children.values()
 
     def get_child_by_name(self, name):
@@ -162,22 +164,36 @@ class IliasNode(object):
 
 
 class Course(IliasNode):
-    def __init__(self, name, url, ilias_session):
-        super().__init__(name, "https://ilias.studium.kit.edu/" + url, ilias_session)
+    def __init__(self, name, url, ilias_session, html_list_item):
+        super().__init__(name, "https://ilias.studium.kit.edu/" + url, ilias_session, html_list_item)
 
 
 class Folder(IliasNode):
-    def __init__(self, name, url, ilias_session):
-        super().__init__(name, "https://ilias.studium.kit.edu/" + url, ilias_session)
+    def __init__(self, name, url, ilias_session, html_list_item):
+        super().__init__(name, "https://ilias.studium.kit.edu/" + url, ilias_session, html_list_item)
 
 
 class File(IliasNode):
-    def __init__(self, name, url, ilias_session):
-        super().__init__(name, url, ilias_session)
-        response = self.session.head(self.url)
-        headers = response.headers
-        self.size = int(headers['Content-Length'])  # FIXME: ILIAS seems to return bogus sizes for some text files.
-        self.name = headers['Content-Description']
+    def __init__(self, name, url, ilias_session, html_list_item):
+        super().__init__(name, url, ilias_session, html_list_item)
+        properties_div = html_list_item.select("div.il_ItemProperties")[0]
+        properties = html_list_item.select("span.il_ItemProperty")
+        ext = properties[0].text.strip()
+        self.name = self.name + "." + ext.strip()
+        self.size = self.human2bytes(properties[1].text)
+
+    @staticmethod
+    def human2bytes(s):
+        symbols = ('B', 'KB', 'MB', 'GB', 'TB')
+        rex = re.compile(r"\s*([0-9,\.]*)\s*([a-zA-Z]*)\s*", re.UNICODE)
+        match = rex.match(s)
+        letters = match.group(2)
+        num = match.group(1).replace(",", ".")
+        num = float(num)
+        prefix = {symbols[0]:1}
+        for i, s in enumerate(symbols[1:]):
+            prefix[s] = 1 << (i+1)*10
+        return int(num * prefix[letters])
 
     def download(self, size, offset):
         file = cache.get(self)
@@ -194,7 +210,7 @@ class IliasDashboard(IliasNode):
     def __init__(self):
         super().__init__("Dashboard",
                          "https://ilias.studium.kit.edu/ilias.php?baseClass=ilPersonalDesktopGUI&cmd=jumpToSelectedItems",
-                         IliasSession())
+                         IliasSession(), None)
 
 
 class IliasFS(LoggingMixIn, Operations):
