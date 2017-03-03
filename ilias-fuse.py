@@ -101,7 +101,7 @@ class IliasNode():
 
     def __init__(self, name, url, ilias_session):
         self.session = ilias_session
-        self.name = name
+        self.name = name.replace("/", "-")
         self.url = url
         self.__children = {}
 
