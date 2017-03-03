@@ -102,11 +102,12 @@ class IliasSession(requests.Session):
     >>> session.get(some_course_url) #use it just like any requests.Session instance
     """
 
-    def __init__(self, username=None, password=None):
+    def __init__(self, cache_timeout, username=None, password=None):
         super().__init__()
         self.username = username if username else input("Username: ")
         self.password = password if password else getpass.getpass()
         self.logger = logging.getLogger(type(self).__name__)
+        self.cache_timeout = cache_timeout
         self.login()
 
     def login(self):
@@ -165,10 +166,13 @@ class IliasNode(object):
         self.session = ilias_session
         self.name = name.replace("/", "-")
         self.url = url
-        self.__children = {}
+        self.__children = None
+        self.__last_children_update = None
 
     def get_children(self):
-        if not self.__children:
+        if self.__children is None or self.__last_children_update < time.time() - self.session.cache_timeout:
+            self.__last_children_update = time.time()
+            self.__children = {}
             node_page_req = self.session.get(self.url, allow_redirects=False)
             if node_page_req.is_redirect:  # Keepalive
                 self.session.login()
@@ -188,7 +192,7 @@ class IliasNode(object):
 
     def get_child_by_name(self, name):
         self.get_children()
-        return self.__children.get(name)
+        return self.__children.get(name) if self.__children is not None else None
 
 
 class Course(IliasNode):
@@ -244,10 +248,10 @@ class File(IliasNode):
 
 
 class IliasDashboard(IliasNode):
-    def __init__(self):
+    def __init__(self, session):
         super().__init__("Dashboard",
                          "https://ilias.studium.kit.edu/ilias.php?baseClass=ilPersonalDesktopGUI&cmd=jumpToSelectedItems",
-                         IliasSession(), None)
+                         session, None)
 
 
 class IliasFS(LoggingMixIn, Operations):
@@ -324,6 +328,8 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging._nameToLevel[args.log_level])
 
-    dashboard = IliasDashboard()
-    cache = Cache(capacity=args.cache, timeout=int(args.cache_timeout * 60))
+    cache_timeout_secs = args.cache_timeout * 60
+    session = IliasSession(cache_timeout_secs)
+    dashboard = IliasDashboard(session)
+    cache = Cache(capacity=args.cache, timeout=cache_timeout_secs)
     fuse = FUSE(IliasFS(args.mountpoint, dashboard), args.mountpoint, foreground=args.foreground)
