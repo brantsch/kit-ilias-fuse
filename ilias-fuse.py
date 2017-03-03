@@ -85,9 +85,9 @@ class IliasNode():
         Call this method to get an instance of the appropriate subclass of IliasNode for the given *url*.
         """
         type_mapping = {
-            re.compile(r"https://ilias.studium.kit.edu/goto_produktiv_crs_\d+\.html"): Course,
-            re.compile(r"https://ilias.studium.kit.edu/goto_produktiv_fold_\d+\.html"): Folder,
-            re.compile(r"ilias.php?.*cmd=sendfile.*"): File
+            re.compile(r"ilias.php\?.*cmdClass=ilrepositorygui.*"): Course,
+            re.compile(r"ilias\.php\?.*cmd=view.*"): Folder,
+            re.compile(r"goto\.php\?.*target=file_[0-9]*_download.*"): File
         }
         first_match = next(filter(None, map(lambda r: r.match(url), type_mapping.keys())), None)
         cls = IliasNode
