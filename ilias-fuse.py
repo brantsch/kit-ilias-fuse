@@ -36,6 +36,7 @@ import locale
 import datetime
 import time
 
+
 @contextmanager
 def setlocale(name):
     saved = locale.setlocale(locale.LC_ALL)
@@ -50,6 +51,7 @@ class Cache(object):
         def __init__(self, file, data):
             self.file = file
             self.data = data
+            self.time = time.time()
 
         def __eq__(self, other):
             return (self.file == other and type(other) == File) or (
@@ -57,8 +59,9 @@ class Cache(object):
 
     cache = list()
 
-    def __init__(self, capacity):
+    def __init__(self, capacity, timeout):
         self.capacity = capacity
+        self.cache_timeout = timeout
 
     def put(self, file, data):
         c = self.CashedFile(file, data)
@@ -72,7 +75,10 @@ class Cache(object):
 
     def get(self, file):
         if file in self.cache:
-            self.cache.append(self.cache.pop(self.cache.index(file)))
+            obj = self.cache.pop(self.cache.index(file))
+            if time.time() - obj.time > self.cache_timeout:
+                return None
+            self.cache.append(obj)
             return self.cache[len(self.cache) - 1].data
         return None
 
@@ -86,6 +92,26 @@ class Cache(object):
 class InvalidCredentialsError(ValueError): pass
 
 
+class IliasFSError(Exception):
+    def __init__(self, message=None):
+        self.message = message
+
+
+class IliasFSNetworkError(IliasFSError): pass
+
+class IliasFSParseError(IliasFSError):
+    pass
+
+
+def raise_ilias_error_to_fuse(e):
+    logging.error(e)
+    if type(e) == IliasSession.LoginError:
+        raise FuseOSError(EACCES)
+    elif type(e) == IliasFSParseError:
+        raise FuseOSError(EREMOTEIO)
+    raise FuseOSError(EIO)
+
+
 class IliasSession(requests.Session):
     """
     Derivative of requests.Session for sessions at the ILIAS of Karlsruhe Institute of Technology.
@@ -96,11 +122,18 @@ class IliasSession(requests.Session):
     >>> session.get(some_course_url) #use it just like any requests.Session instance
     """
 
-    def __init__(self, username=None, password=None):
+    class LoginError(IliasFSError):
+        message = 'Error logging in to ilias.'
+
+        def __init__(self):
+            pass
+
+    def __init__(self, cache_timeout, username=None, password=None):
         super().__init__()
         self.username = username if username else input("Username: ")
         self.password = password if password else getpass.getpass()
         self.logger = logging.getLogger(type(self).__name__)
+        self.cache_timeout = cache_timeout
         self.login()
 
     def login(self):
@@ -133,6 +166,22 @@ class IliasSession(requests.Session):
             "RelayState": relay_state
         })
 
+    def get_ensure_login(self, url):
+        kwargs = {
+            "allow_redirects": False,
+            "timeout": 5
+        }
+        try:
+            resp = self.get(url, **kwargs)
+            if resp.is_redirect:  # Try again
+                self.login()
+                resp = self.get(url, **kwargs)
+                if resp.is_redirect:  # Didn't work...
+                    raise IliasFSError()
+            return resp
+        except requests.RequestException as e:
+            raise IliasFSNetworkError(e)
+
 
 class IliasNode(object):
     @staticmethod
@@ -159,30 +208,31 @@ class IliasNode(object):
         self.session = ilias_session
         self.name = name.replace("/", "-")
         self.url = url
-        self.__children = {}
+        self.__children = None
+        self.__last_children_update = None
 
     def get_children(self):
-        if not self.__children:
-            node_page_req = self.session.get(self.url, allow_redirects=False)
-            if node_page_req.is_redirect:  # Keepalive
-                self.session.login()
-                node_page_req = self.session.get(self.url, allow_redirects=False)
-            node_page = node_page_req.text
-            soup = BeautifulSoup(node_page, 'lxml')
-            child_list_items = soup.select("div.il_ContainerListItem")
-            for list_item in child_list_items:
-                try:
+        if self.__children is None or self.__last_children_update < time.time() - self.session.cache_timeout:
+            self.__last_children_update = time.time()
+            self.__children = {}
+            node_page_req = self.session.get_ensure_login(self.url)
+            try:
+                node_page = node_page_req.text
+                soup = BeautifulSoup(node_page, 'lxml')
+                child_list_items = soup.select("div.il_ContainerListItem")
+                for list_item in child_list_items:
                     a = list_item.select("a.il_ContainerItemTitle")[0]
                     child_node = IliasNode.create_instance(a.text, a.get("href"), self.session, list_item)
                     logging.debug(child_node)
                     self.__children[child_node.name] = child_node
-                except Exception as e:
-                    logging.warn(e)
+            except Exception as e:
+                self.__children = None
+                raise IliasFSParseError(e)
         return self.__children.values()
 
     def get_child_by_name(self, name):
         self.get_children()
-        return self.__children.get(name)
+        return self.__children.get(name) if self.__children is not None else None
 
 
 class Course(IliasNode):
@@ -225,11 +275,7 @@ class File(IliasNode):
         if file is not None:
             logging.info("Using cached file")
             return file[offset:offset + size]
-        response = self.session.get(self.url, allow_redirects=False)
-        if response.is_redirect:  # Ilias redirects to login form, if session expired when requesting a file...
-            self.session.login()
-            response = self.session.get(self.url, allow_redirects=False)  # ... so try again once.
-        content = response.content
+        content = self.session.get_ensure_login(self.url).content
         cache.put(self, content)
         # Update size because size from overview is only approximate
         # Apparently this works
@@ -238,10 +284,10 @@ class File(IliasNode):
 
 
 class IliasDashboard(IliasNode):
-    def __init__(self):
+    def __init__(self, session):
         super().__init__("Dashboard",
                          "https://ilias.studium.kit.edu/ilias.php?baseClass=ilPersonalDesktopGUI&cmd=jumpToSelectedItems",
-                         IliasSession(), None)
+                         session, None)
 
 
 class IliasFS(LoggingMixIn, Operations):
@@ -254,10 +300,13 @@ class IliasFS(LoggingMixIn, Operations):
         return super(IliasFS, self).__call__(op, path, *args)
 
     def access(self, path, mode):
-        if self.__path_to_object(path):
-            return 0
-        else:
-            raise FuseOSError(ENOENT)
+        try:
+            if self.__path_to_object(path):
+                return 0
+            else:
+                raise FuseOSError(ENOENT)
+        except IliasFSError as e:
+            raise_ilias_error_to_fuse(e)
 
     def __path_to_object(self, path):
         """
@@ -272,38 +321,47 @@ class IliasFS(LoggingMixIn, Operations):
         return node
 
     def getattr(self, path, fh=None):
-        node = self.__path_to_object(path)
-        if node:
-            is_file = (type(node) == File)
-            st_mode_ft_bits = stat.S_IFREG if is_file else stat.S_IFDIR
-            st_mode_permissions = 0o444 if is_file else 0o555
-            return {
-                'st_mode': st_mode_ft_bits | st_mode_permissions,
-                'st_uid': self.uid,
-                'st_gid': self.gid,
-                'st_size': node.size if is_file else 0,
-                'st_ctime': node.time if is_file else 0,
-                'st_mtime': node.time if is_file else 0
-            }
-        else:
-            raise FuseOSError(ENOENT)
+        try:
+            node = self.__path_to_object(path)
+            if node:
+                is_file = (type(node) == File)
+                st_mode_ft_bits = stat.S_IFREG if is_file else stat.S_IFDIR
+                st_mode_permissions = 0o444 if is_file else 0o555
+                return {
+                    'st_mode': st_mode_ft_bits | st_mode_permissions,
+                    'st_uid': self.uid,
+                    'st_gid': self.gid,
+                    'st_size': node.size if is_file else 0,
+                    'st_ctime': node.time if is_file else 0,
+                    'st_mtime': node.time if is_file else 0
+                }
+            else:
+                raise FuseOSError(ENOENT)
+        except IliasFSError as e:
+            raise_ilias_error_to_fuse(e)
 
     getxattr = None
 
     def readdir(self, path, fh):
-        node = self.__path_to_object(path)
-        return ['.', '..'] + [child.name for child in filter(lambda c: type(c) != IliasNode, node.get_children())]
+        try:
+            node = self.__path_to_object(path)
+            return ['.', '..'] + [child.name for child in filter(lambda c: type(c) != IliasNode, node.get_children())]
+        except IliasFSError as e:
+            raise_ilias_error_to_fuse(e)
 
     def read(self, path, size, offset, fh):
-        node = self.__path_to_object(path)
-        if node:
-            if type(node) == File:
-                val = node.download(size, offset)
-                return val
+        try:
+            node = self.__path_to_object(path)
+            if node:
+                if type(node) == File:
+                    val = node.download(size, offset)
+                    return val
+                else:
+                    raise FuseOSError(EISDIR)
             else:
-                raise FuseOSError(EISDIR)
-        else:
-            raise FuseOSError(ENOENT)
+                raise FuseOSError(ENOENT)
+        except IliasFSError as e:
+            raise_ilias_error_to_fuse(e)
 
 
 if __name__ == "__main__":
@@ -313,10 +371,13 @@ if __name__ == "__main__":
     parser.add_argument('--log-level', type=str, default=logging.getLevelName(logging.INFO),
                         choices=logging._nameToLevel.keys(), help="adjust the verbosity of logging")
     parser.add_argument('--cache', type=int, default=50, help='File cache in MB')
+    parser.add_argument('--cache-timeout', type=float, default=30, help='File cache timeout in minutes')
     args = parser.parse_args()
 
     logging.basicConfig(level=logging._nameToLevel[args.log_level])
 
-    dashboard = IliasDashboard()
-    cache = Cache(capacity=args.cache)
+    cache_timeout_secs = args.cache_timeout * 60
+    session = IliasSession(cache_timeout_secs)
+    dashboard = IliasDashboard(session)
+    cache = Cache(capacity=args.cache, timeout=cache_timeout_secs)
     fuse = FUSE(IliasFS(args.mountpoint, dashboard), args.mountpoint, foreground=args.foreground)
