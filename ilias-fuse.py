@@ -26,12 +26,65 @@ import re
 import os
 import sys
 import pathlib
-from fusepy.fuse import FUSE, FuseOSError, Operations, LoggingMixIn
+from fusepy import FUSE, FuseOSError, Operations, LoggingMixIn
 from errno import *
 import stat
 import argparse
 
+from contextlib import contextmanager
+import locale
+import datetime
+import time
+
+@contextmanager
+def setlocale(name):
+    saved = locale.setlocale(locale.LC_ALL)
+    try:
+        yield locale.setlocale(locale.LC_ALL, name)
+    finally:
+        locale.setlocale(locale.LC_ALL, saved)
+
+
+class Cache(object):
+    class CashedFile(object):
+        def __init__(self, file, data):
+            self.file = file
+            self.data = data
+
+        def __eq__(self, other):
+            return (self.file == other and type(other) == File) or (
+                type(other) == type(self) and self.file == other.file)
+
+    cache = list()
+
+    def __init__(self, capacity):
+        self.capacity = capacity
+
+    def put(self, file, data):
+        c = self.CashedFile(file, data)
+        if c in self.cache:
+            self.cache.remove(c)
+        self.cache.append(c)
+        while self.size() > self.capacity and len(self.cache) > 1:
+            self.cache.pop(0)
+            logging.info("Poped cache element.")
+        logging.info("Current cache size: " + str(self.size()) + "MB")
+
+    def get(self, file):
+        if file in self.cache:
+            self.cache.append(self.cache.pop(self.cache.index(file)))
+            return self.cache[len(self.cache) - 1].data
+        return None
+
+    def size(self):
+        sm = 0
+        for d in self.cache:
+            sm += len(d.data)
+        return sm / 1024.0 / 1024.0
+
+
 class InvalidCredentialsError(ValueError): pass
+
 
 class IliasSession(requests.Session):
     """
@@ -54,94 +107,130 @@ class IliasSession(requests.Session):
             "idp_selection": "https://idp.scc.kit.edu/idp/shibboleth",
             "target": "https://ilias.studium.kit.edu/shib_login.php?target=",
             "home_organization_selection": "Mit KIT-Account anmelden"
-            })
+        })
         jsessionid = self.cookies.get("JSESSIONID")
         login_response = self.post(session_establishment_response.url, data={
             "j_username": username,
             "j_password": password,
             "_eventId_proceed": ""
-            })
-        login_soup = BeautifulSoup(login_response.text)
+        })
+        login_soup = BeautifulSoup(login_response.text, 'lxml')
         saml_response = None
         relay_state = None
         try:
             saml_response = login_soup.find("input", attrs={"name": "SAMLResponse"}).get("value")
             relay_state = login_soup.find("input", attrs={"name": "RelayState"}).get("value")
         except AttributeError as e:
-            raise InvalidCredentialsError("Username and/or password most likely invalid. (SAML response could not be found.)") from e
+            raise InvalidCredentialsError(
+                "Username and/or password most likely invalid. (SAML response could not be found.)") from e
         self.post("https://ilias.studium.kit.edu/Shibboleth.sso/SAML2/POST", data={
             "SAMLResponse": saml_response,
             "RelayState": relay_state
-            })
+        })
 
-class IliasNode():
+
+class IliasNode(object):
     @staticmethod
-    def create_instance(name, url, ilias_session):
+    def create_instance(name, url, ilias_session, html_list_item):
         """
         Call this method to get an instance of the appropriate subclass of IliasNode for the given *url*.
         """
         type_mapping = {
-                re.compile(r"https://ilias.studium.kit.edu/goto_produktiv_crs_\d+\.html"): Course,
-                re.compile(r"https://ilias.studium.kit.edu/goto_produktiv_fold_\d+\.html"): Folder,
-                re.compile(r"ilias.php?.*cmd=sendfile.*"): File
-                }
+            re.compile(r"ilias.php\?.*cmdClass=ilrepositorygui.*"): Course,
+            re.compile(r"ilias\.php\?.*cmd=view.*"): Folder,
+            re.compile(r"https://ilias.studium.kit.edu/goto\.php\?.*target=file_[0-9]*_download.*"): File
+        }
         first_match = next(filter(None, map(lambda r: r.match(url), type_mapping.keys())), None)
         cls = IliasNode
         if first_match:
             cls = type_mapping[first_match.re]
-        return cls(name, url, ilias_session)
+        return cls(name, url, ilias_session, html_list_item)
 
     def __repr__(self):
-        return "{}(name={self.name}, url={self.url}, ilias_session={self.session})".format(type(self).__name__, self=self)
+        return "{}(name={self.name}, url={self.url}, ilias_session={self.session})".format(type(self).__name__,
+                                                                                           self=self)
 
-    def __init__(self, name, url, ilias_session):
+    def __init__(self, name, url, ilias_session, html_list_item):
         self.session = ilias_session
-        self.name = name
+        self.name = name.replace("/", "-")
         self.url = url
         self.__children = {}
 
     def get_children(self):
         if not self.__children:
             node_page = self.session.get(self.url).text
-            soup = BeautifulSoup(node_page)
-            child_anchors = soup.select("a.il_ContainerItemTitle")
-            for a in child_anchors:
+            soup = BeautifulSoup(node_page, 'lxml')
+            child_list_items = soup.select("div.il_ContainerListItem")
+            for list_item in child_list_items:
                 try:
-                    child_node = IliasNode.create_instance(a.text, a.get("href"), self.session)
+                    a = list_item.select("a.il_ContainerItemTitle")[0]
+                    child_node = IliasNode.create_instance(a.text, a.get("href"), self.session, list_item)
+                    logging.debug(child_node)
                     self.__children[child_node.name] = child_node
-                except:
-                    pass
+                except Exception as e:
+                    logging.warn(e)
         return self.__children.values()
 
     def get_child_by_name(self, name):
         self.get_children()
         return self.__children.get(name)
 
+
 class Course(IliasNode):
-    pass
+    def __init__(self, name, url, ilias_session, html_list_item):
+        super().__init__(name, "https://ilias.studium.kit.edu/" + url, ilias_session, html_list_item)
+
 
 class Folder(IliasNode):
-    pass
+    def __init__(self, name, url, ilias_session, html_list_item):
+        super().__init__(name, "https://ilias.studium.kit.edu/" + url, ilias_session, html_list_item)
+
 
 class File(IliasNode):
-    def __init__(self, name, url, ilias_session):
-        """
-        Due to horrible botchery both on my part and at ILIAS, the name
-        attribute will be ignored and replaced by the proper full filename.
-        """
-        super().__init__(name, "https://ilias.studium.kit.edu/"+url, ilias_session)
-        response = self.session.head(self.url)
-        headers = response.headers
-        self.size = int(headers['Content-Length']) #FIXME: ILIAS seems to return bogus sizes for some text files.
-        self.name = headers['Content-Description']
+    def __init__(self, name, url, ilias_session, html_list_item):
+        super().__init__(name, url, ilias_session, html_list_item)
+        properties_div = html_list_item.select("div.il_ItemProperties")[0]
+        properties = html_list_item.select("span.il_ItemProperty")
+        ext = properties[0].text.strip()
+        self.name = self.name + "." + ext.strip()
+        self.size = self.human2bytes(properties[1].text) # Approximate file size
+        with setlocale('de_DE.UTF-8'):
+            dtime = datetime.datetime.strptime(properties[2].text.strip(), "%d. %b %Y, %H:%M") # TODO Timezone?
+            self.time = time.mktime(dtime.timetuple())
+
+    @staticmethod
+    def human2bytes(s):
+        symbols = ('B', 'KB', 'MB', 'GB', 'TB')
+        rex = re.compile(r"\s*([0-9,\.]*)\s*([a-zA-Z]*)\s*", re.UNICODE)
+        match = rex.match(s)
+        letters = match.group(2)
+        num = match.group(1).replace(",", ".")
+        num = float(num)
+        prefix = {symbols[0]:1}
+        for i, s in enumerate(symbols[1:]):
+            prefix[s] = 1 << (i+1)*10
+        return int(num * prefix[letters])
 
     def download(self, size, offset):
+        file = cache.get(self)
+        if file is not None:
+            logging.info("Using cached file")
+            return file[offset:offset + size]
         response = self.session.get(self.url)
-        return response.content[offset:offset+size]
+        content = response.content
+        cache.put(self, content)
+        # Update size because size from overview is only approximate
+        # Apparently this works
+        self.size = len(content)
+        return content[offset:offset + size]
+
 
 class IliasDashboard(IliasNode):
     def __init__(self):
-        super().__init__("Dashboard", "https://ilias.studium.kit.edu/ilias.php?baseClass=ilPersonalDesktopGUI&cmd=jumpToSelectedItems", IliasSession())
+        super().__init__("Dashboard",
+                         "https://ilias.studium.kit.edu/ilias.php?baseClass=ilPersonalDesktopGUI&cmd=jumpToSelectedItems",
+                         IliasSession(), None)
+
 
 class IliasFS(LoggingMixIn, Operations):
     def __init__(self, root, dashboard):
@@ -170,7 +259,6 @@ class IliasFS(LoggingMixIn, Operations):
                 break
         return node
 
-
     def getattr(self, path, fh=None):
         node = self.__path_to_object(path)
         if node:
@@ -178,11 +266,13 @@ class IliasFS(LoggingMixIn, Operations):
             st_mode_ft_bits = stat.S_IFREG if is_file else stat.S_IFDIR
             st_mode_permissions = 0o444 if is_file else 0o555
             return {
-                    'st_mode': st_mode_ft_bits | st_mode_permissions,
-                    'st_uid': self.uid,
-                    'st_gid': self.gid,
-                    'st_size': node.size if is_file else 0
-                    }
+                'st_mode': st_mode_ft_bits | st_mode_permissions,
+                'st_uid': self.uid,
+                'st_gid': self.gid,
+                'st_size': node.size if is_file else 0,
+                'st_ctime': node.time if is_file else 0,
+                'st_mtime': node.time if is_file else 0
+            }
         else:
             raise FuseOSError(ENOENT)
 
@@ -203,14 +293,18 @@ class IliasFS(LoggingMixIn, Operations):
         else:
             raise FuseOSError(ENOENT)
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description = "At last, a FUSE filesystem for the ILIAS installation at KIT")
+    parser = argparse.ArgumentParser(description="At last, a FUSE filesystem for the ILIAS installation at KIT")
     parser.add_argument('mountpoint', type=str, help="where to mount this filesystem")
     parser.add_argument('--foreground', action='store_true', help="do not fork away to background")
-    parser.add_argument('--log-level', type=str, default=logging.getLevelName(logging.INFO), choices=logging._nameToLevel.keys(), help="adjust the verbosity of logging")
+    parser.add_argument('--log-level', type=str, default=logging.getLevelName(logging.INFO),
+                        choices=logging._nameToLevel.keys(), help="adjust the verbosity of logging")
+    parser.add_argument('--cache', type=int, default=50, help='File cache in MB')
     args = parser.parse_args()
 
     logging.basicConfig(level=logging._nameToLevel[args.log_level])
 
     dashboard = IliasDashboard()
+    cache = Cache(capacity=args.cache)
     fuse = FUSE(IliasFS(args.mountpoint, dashboard), args.mountpoint, foreground=args.foreground)
