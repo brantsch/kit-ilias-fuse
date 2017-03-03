@@ -93,7 +93,10 @@ class InvalidCredentialsError(ValueError): pass
 
 
 class IliasFSError(Exception):
-    pass
+    def __init__(self, message=None):
+        self.message = message
+
+class IliasFSNetworkError(IliasFSError): pass
 
 
 class IliasSession(requests.Session):
@@ -108,6 +111,8 @@ class IliasSession(requests.Session):
 
     class LoginError(IliasFSError):
         message = 'Error logging in to ilias.'
+        def __init__(self):
+            pass
 
     def __init__(self, cache_timeout, username=None, password=None):
         super().__init__()
@@ -148,13 +153,20 @@ class IliasSession(requests.Session):
         })
 
     def get_ensure_login(self, url):
-        resp = self.get(url, allow_redirects=False)
-        if resp.is_redirect:  # Try again
-            self.login()
-            resp = self.get(url, allow_redirects=False)
-            if resp.is_redirect:  # Didn't work...
-                raise IliasFSError()
-        return resp
+        kwargs = {
+            "allow_redirects": False,
+            "timeout": 5
+        }
+        try:
+            resp = self.get(url, **kwargs)
+            if resp.is_redirect:  # Try again
+                self.login()
+                resp = self.get(url, **kwargs)
+                if resp.is_redirect:  # Didn't work...
+                    raise IliasFSError()
+            return resp
+        except requests.RequestException as e:
+            raise IliasFSNetworkError(e)
 
 
 class IliasNode(object):
@@ -189,17 +201,18 @@ class IliasNode(object):
         if self.__children is None or self.__last_children_update < time.time() - self.session.cache_timeout:
             self.__last_children_update = time.time()
             self.__children = {}
-            node_page = self.session.get_ensure_login(self.url).text
-            soup = BeautifulSoup(node_page, 'lxml')
-            child_list_items = soup.select("div.il_ContainerListItem")
-            for list_item in child_list_items:
-                try:
-                    a = list_item.select("a.il_ContainerItemTitle")[0]
-                    child_node = IliasNode.create_instance(a.text, a.get("href"), self.session, list_item)
-                    logging.debug(child_node)
-                    self.__children[child_node.name] = child_node
-                except Exception as e:
-                    logging.warn(e)
+            try:
+                node_page = self.session.get_ensure_login(self.url).text
+                soup = BeautifulSoup(node_page, 'lxml')
+                child_list_items = soup.select("div.il_ContainerListItem")
+                for list_item in child_list_items:
+                        a = list_item.select("a.il_ContainerItemTitle")[0]
+                        child_node = IliasNode.create_instance(a.text, a.get("href"), self.session, list_item)
+                        logging.debug(child_node)
+                        self.__children[child_node.name] = child_node
+            except Exception as e:
+                self.__children = None
+                raise IliasFSError(e)
         return self.__children.values()
 
     def get_child_by_name(self, name):
@@ -272,10 +285,14 @@ class IliasFS(LoggingMixIn, Operations):
         return super(IliasFS, self).__call__(op, path, *args)
 
     def access(self, path, mode):
-        if self.__path_to_object(path):
-            return 0
-        else:
-            raise FuseOSError(ENOENT)
+        try:
+            if self.__path_to_object(path):
+                return 0
+            else:
+                raise FuseOSError(ENOENT)
+        except IliasFSError as e:
+            logging.error(e)
+            raise FuseOSError(EIO)
 
     def __path_to_object(self, path):
         """
@@ -290,38 +307,50 @@ class IliasFS(LoggingMixIn, Operations):
         return node
 
     def getattr(self, path, fh=None):
-        node = self.__path_to_object(path)
-        if node:
-            is_file = (type(node) == File)
-            st_mode_ft_bits = stat.S_IFREG if is_file else stat.S_IFDIR
-            st_mode_permissions = 0o444 if is_file else 0o555
-            return {
-                'st_mode': st_mode_ft_bits | st_mode_permissions,
-                'st_uid': self.uid,
-                'st_gid': self.gid,
-                'st_size': node.size if is_file else 0,
-                'st_ctime': node.time if is_file else 0,
-                'st_mtime': node.time if is_file else 0
-            }
-        else:
-            raise FuseOSError(ENOENT)
+        try:
+            node = self.__path_to_object(path)
+            if node:
+                is_file = (type(node) == File)
+                st_mode_ft_bits = stat.S_IFREG if is_file else stat.S_IFDIR
+                st_mode_permissions = 0o444 if is_file else 0o555
+                return {
+                    'st_mode': st_mode_ft_bits | st_mode_permissions,
+                    'st_uid': self.uid,
+                    'st_gid': self.gid,
+                    'st_size': node.size if is_file else 0,
+                    'st_ctime': node.time if is_file else 0,
+                    'st_mtime': node.time if is_file else 0
+                }
+            else:
+                raise FuseOSError(ENOENT)
+        except IliasFSError as e:
+            logging.error(e)
+            raise FuseOSError(EIO)
 
     getxattr = None
 
     def readdir(self, path, fh):
-        node = self.__path_to_object(path)
-        return ['.', '..'] + [child.name for child in filter(lambda c: type(c) != IliasNode, node.get_children())]
+        try:
+            node = self.__path_to_object(path)
+            return ['.', '..'] + [child.name for child in filter(lambda c: type(c) != IliasNode, node.get_children())]
+        except IliasFSError as e:
+            logging.error(e)
+            raise FuseOSError(EIO)
 
     def read(self, path, size, offset, fh):
-        node = self.__path_to_object(path)
-        if node:
-            if type(node) == File:
-                val = node.download(size, offset)
-                return val
+        try:
+            node = self.__path_to_object(path)
+            if node:
+                if type(node) == File:
+                    val = node.download(size, offset)
+                    return val
+                else:
+                    raise FuseOSError(EISDIR)
             else:
-                raise FuseOSError(EISDIR)
-        else:
-            raise FuseOSError(ENOENT)
+                raise FuseOSError(ENOENT)
+        except IliasFSError as e:
+            logging.error(e)
+            raise FuseOSError(EIO)
 
 
 if __name__ == "__main__":
