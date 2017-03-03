@@ -98,9 +98,14 @@ class IliasSession(requests.Session):
 
     def __init__(self, username=None, password=None):
         super().__init__()
-        username = username if username else input("Username: ")
-        password = password if password else getpass.getpass()
+        self.username = username if username else input("Username: ")
+        self.password = password if password else getpass.getpass()
         self.logger = logging.getLogger(type(self).__name__)
+        self.login()
+
+    def login(self):
+        self.cookies.clear()
+        logging.info("(Re-)logging in...")
 
         session_establishment_response = self.post("https://ilias.studium.kit.edu/Shibboleth.sso/Login", data={
             "sendLogin": "1",
@@ -110,8 +115,8 @@ class IliasSession(requests.Session):
         })
         jsessionid = self.cookies.get("JSESSIONID")
         login_response = self.post(session_establishment_response.url, data={
-            "j_username": username,
-            "j_password": password,
+            "j_username": self.username,
+            "j_password": self.password,
             "_eventId_proceed": ""
         })
         login_soup = BeautifulSoup(login_response.text, 'lxml')
@@ -158,7 +163,11 @@ class IliasNode(object):
 
     def get_children(self):
         if not self.__children:
-            node_page = self.session.get(self.url).text
+            node_page_req = self.session.get(self.url, allow_redirects=False)
+            if node_page_req.is_redirect:  # Keepalive
+                self.session.login()
+                node_page_req = self.session.get(self.url, allow_redirects=False)
+            node_page = node_page_req.text
             soup = BeautifulSoup(node_page, 'lxml')
             child_list_items = soup.select("div.il_ContainerListItem")
             for list_item in child_list_items:
@@ -193,9 +202,9 @@ class File(IliasNode):
         properties = html_list_item.select("span.il_ItemProperty")
         ext = properties[0].text.strip()
         self.name = self.name + "." + ext.strip()
-        self.size = self.human2bytes(properties[1].text) # Approximate file size
+        self.size = self.human2bytes(properties[1].text)  # Approximate file size
         with setlocale('de_DE.UTF-8'):
-            dtime = datetime.datetime.strptime(properties[2].text.strip(), "%d. %b %Y, %H:%M") # TODO Timezone?
+            dtime = datetime.datetime.strptime(properties[2].text.strip(), "%d. %b %Y, %H:%M")  # TODO Timezone?
             self.time = time.mktime(dtime.timetuple())
 
     @staticmethod
@@ -206,9 +215,9 @@ class File(IliasNode):
         letters = match.group(2)
         num = match.group(1).replace(",", ".")
         num = float(num)
-        prefix = {symbols[0]:1}
+        prefix = {symbols[0]: 1}
         for i, s in enumerate(symbols[1:]):
-            prefix[s] = 1 << (i+1)*10
+            prefix[s] = 1 << (i + 1) * 10
         return int(num * prefix[letters])
 
     def download(self, size, offset):
@@ -216,7 +225,10 @@ class File(IliasNode):
         if file is not None:
             logging.info("Using cached file")
             return file[offset:offset + size]
-        response = self.session.get(self.url)
+        response = self.session.get(self.url, allow_redirects=False)
+        if response.is_redirect:  # Ilias redirects to login form, if session expired when requesting a file...
+            self.session.login()
+            response = self.session.get(self.url, allow_redirects=False)  # ... so try again once.
         content = response.content
         cache.put(self, content)
         # Update size because size from overview is only approximate
