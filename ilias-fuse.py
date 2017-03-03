@@ -31,6 +31,19 @@ from errno import *
 import stat
 import argparse
 
+from contextlib import contextmanager
+import locale
+import datetime
+import time
+
+@contextmanager
+def setlocale(name):
+    saved = locale.setlocale(locale.LC_ALL)
+    try:
+        yield locale.setlocale(locale.LC_ALL, name)
+    finally:
+        locale.setlocale(locale.LC_ALL, saved)
+
 
 class Cache(object):
     class CashedFile(object):
@@ -181,6 +194,9 @@ class File(IliasNode):
         ext = properties[0].text.strip()
         self.name = self.name + "." + ext.strip()
         self.size = self.human2bytes(properties[1].text) # Approximate file size
+        with setlocale('de_DE.UTF-8'):
+            dtime = datetime.datetime.strptime(properties[2].text.strip(), "%d. %b %Y, %H:%M") # TODO Timezone?
+            self.time = time.mktime(dtime.timetuple())
 
     @staticmethod
     def human2bytes(s):
@@ -253,7 +269,9 @@ class IliasFS(LoggingMixIn, Operations):
                 'st_mode': st_mode_ft_bits | st_mode_permissions,
                 'st_uid': self.uid,
                 'st_gid': self.gid,
-                'st_size': node.size if is_file else 0
+                'st_size': node.size if is_file else 0,
+                'st_ctime': node.time if is_file else 0,
+                'st_mtime': node.time if is_file else 0
             }
         else:
             raise FuseOSError(ENOENT)
