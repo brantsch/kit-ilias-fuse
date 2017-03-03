@@ -100,14 +100,12 @@ class IliasSession(requests.Session):
         super().__init__()
         self.username = username if username else input("Username: ")
         self.password = password if password else getpass.getpass()
+        self.logger = logging.getLogger(type(self).__name__)
         self.login()
 
     def login(self):
         self.cookies.clear()
         logging.info("(Re-)logging in...")
-        username = self.username
-        password = self.password
-        self.logger = logging.getLogger(type(self).__name__)
 
         session_establishment_response = self.post("https://ilias.studium.kit.edu/Shibboleth.sso/Login", data={
             "sendLogin": "1",
@@ -117,8 +115,8 @@ class IliasSession(requests.Session):
         })
         jsessionid = self.cookies.get("JSESSIONID")
         login_response = self.post(session_establishment_response.url, data={
-            "j_username": username,
-            "j_password": password,
+            "j_username": self.username,
+            "j_password": self.password,
             "_eventId_proceed": ""
         })
         login_soup = BeautifulSoup(login_response.text, 'lxml')
