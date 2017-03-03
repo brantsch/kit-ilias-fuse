@@ -32,6 +32,44 @@ import stat
 import argparse
 
 
+class Cache(object):
+    class CashedFile(object):
+        def __init__(self, file, data):
+            self.file = file
+            self.data = data
+
+        def __eq__(self, other):
+            return (self.file == other and type(other) == File) or (
+                type(other) == type(self) and self.file == other.file)
+
+    cache = list()
+
+    def __init__(self, capacity):
+        self.capacity = capacity
+
+    def put(self, file, data):
+        c = self.CashedFile(file, data)
+        if c in self.cache:
+            self.cache.remove(c)
+        self.cache.append(c)
+        while self.size() > self.capacity and len(self.cache) > 1:
+            self.cache.pop(0)
+            logging.info("Poped cache element.")
+        logging.info("Current cache size: " + str(self.size()) + "MB")
+
+    def get(self, file):
+        if file in self.cache:
+            self.cache.append(self.cache.pop(self.cache.index(file)))
+            return self.cache[len(self.cache) - 1].data
+        return None
+
+    def size(self):
+        sm = 0
+        for d in self.cache:
+            sm += len(d.data)
+        return sm / 1024.0 / 1024.0
+
+
 class InvalidCredentialsError(ValueError): pass
 
 
@@ -78,7 +116,7 @@ class IliasSession(requests.Session):
         })
 
 
-class IliasNode():
+class IliasNode(object):
     @staticmethod
     def create_instance(name, url, ilias_session):
         """
@@ -142,8 +180,14 @@ class File(IliasNode):
         self.name = headers['Content-Description']
 
     def download(self, size, offset):
+        file = cache.get(self)
+        if file is not None:
+            logging.info("Using cached file")
+            return file[offset:offset + size]
         response = self.session.get(self.url)
-        return response.content[offset:offset + size]
+        content = response.content
+        cache.put(self, content)
+        return content[offset:offset + size]
 
 
 class IliasDashboard(IliasNode):
@@ -219,9 +263,11 @@ if __name__ == "__main__":
     parser.add_argument('--foreground', action='store_true', help="do not fork away to background")
     parser.add_argument('--log-level', type=str, default=logging.getLevelName(logging.INFO),
                         choices=logging._nameToLevel.keys(), help="adjust the verbosity of logging")
+    parser.add_argument('--cache', type=int, default=50, help='File cache in MB')
     args = parser.parse_args()
 
     logging.basicConfig(level=logging._nameToLevel[args.log_level])
 
     dashboard = IliasDashboard()
+    cache = Cache(capacity=args.cache)
     fuse = FUSE(IliasFS(args.mountpoint, dashboard), args.mountpoint, foreground=args.foreground)
