@@ -99,11 +99,16 @@ class IliasFSError(Exception):
 
 class IliasFSNetworkError(IliasFSError): pass
 
+class IliasFSParseError(IliasFSError):
+    pass
+
 
 def raise_ilias_error_to_fuse(e):
     logging.error(e)
     if type(e) == IliasSession.LoginError:
         raise FuseOSError(EACCES)
+    elif type(e) == IliasFSParseError:
+        raise FuseOSError(EREMOTEIO)
     raise FuseOSError(EIO)
 
 
@@ -210,8 +215,9 @@ class IliasNode(object):
         if self.__children is None or self.__last_children_update < time.time() - self.session.cache_timeout:
             self.__last_children_update = time.time()
             self.__children = {}
+            node_page_req = self.session.get_ensure_login(self.url)
             try:
-                node_page = self.session.get_ensure_login(self.url).text
+                node_page = node_page_req.text
                 soup = BeautifulSoup(node_page, 'lxml')
                 child_list_items = soup.select("div.il_ContainerListItem")
                 for list_item in child_list_items:
@@ -221,7 +227,7 @@ class IliasNode(object):
                     self.__children[child_node.name] = child_node
             except Exception as e:
                 self.__children = None
-                raise IliasFSError(e)
+                raise IliasFSParseError(e)
         return self.__children.values()
 
     def get_child_by_name(self, name):
