@@ -221,7 +221,10 @@ class IliasNode(object):
                 soup = BeautifulSoup(node_page, 'lxml')
                 child_list_items = soup.select("div.il_ContainerListItem")
                 for list_item in child_list_items:
-                    a = list_item.select("a.il_ContainerItemTitle")[0]
+                    a = list_item.select("a.il_ContainerItemTitle")
+                    if len(a) == 0:
+                        continue
+                    a = a[0]
                     child_node = IliasNode.create_instance(a.text, a.get("href"), self.session, list_item)
                     logging.debug(child_node)
                     self.__children[child_node.name] = child_node
