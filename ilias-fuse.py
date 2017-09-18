@@ -154,6 +154,13 @@ class IliasSession(requests.Session):
             "_eventId_proceed": ""
         })
         login_soup = BeautifulSoup(login_response.text, 'lxml')
+        otp_inp = login_soup.find("input", attrs={"name": "j_tokenNumber"})
+        if otp_inp:
+            print("OTP Detected.")
+            otp = input("OTP token: ")
+            otp_url = otp_inp.parent.parent.parent['action']
+            otp_response = self.post('https://idp.scc.kit.edu'+otp_url, data={'j_tokenNumber':otp, "_eventId_proceed": ""})
+            login_soup = BeautifulSoup(otp_response.text, 'lxml')
         saml_response = None
         relay_state = None
         try:
