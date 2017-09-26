@@ -265,12 +265,19 @@ class File(IliasNode):
         self.name = self.name + "." + ext.strip()
         self.size = self.human2bytes(properties[1].text)  # Approximate file size
         with setlocale('de_DE.UTF-8'):
-            date_string = properties[2].text.strip().lower()
-            date_string = date_string.replace('heute', (datetime.datetime.now()).strftime('%d. %b %Y')) if 'heute' in date_string else date_string
-            date_string = date_string.replace('gestern', (datetime.datetime.now() - datetime.timedelta(
+            try:
+                self.time = self.parse_date(properties[2].text.strip().lower())
+            except ValueError:
+                self.time = self.parse_date(properties[3].text.strip().lower())
+
+    @staticmethod
+    def parse_date(date_string):
+        date_string = date_string.replace('heute', (datetime.datetime.now()).strftime('%d. %b %Y')) if 'heute' in date_string else date_string
+        date_string = date_string.replace('gestern', (datetime.datetime.now() - datetime.timedelta(
                 days=1)).strftime('%d. %b %Y')) if 'gestern' in date_string else date_string
-            dtime = datetime.datetime.strptime(date_string, "%d. %b %Y, %H:%M")  # TODO Timezone?
-            self.time = time.mktime(dtime.timetuple())
+        dtime = datetime.datetime.strptime(date_string, "%d. %b %Y, %H:%M")  # TODO Timezone?
+        return time.mktime(dtime.timetuple())
+
 
     @staticmethod
     def human2bytes(s):
