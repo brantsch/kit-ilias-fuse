@@ -26,7 +26,7 @@ import re
 import os
 import sys
 import pathlib
-from fusepy import FUSE, FuseOSError, Operations, LoggingMixIn
+from fuse import FUSE, FuseOSError, Operations, LoggingMixIn
 from errno import *
 import stat
 import argparse
