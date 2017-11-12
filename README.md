@@ -13,6 +13,10 @@ Please use `git clone`.
 - pyfuse
 - and, of course, Python 3
 
+You can also use pip (and venv):
+
+    pip install -r requirements.txt
+
 # Usage
 ```
 % ilias-fuse.py /path/to/your/mountpoint
