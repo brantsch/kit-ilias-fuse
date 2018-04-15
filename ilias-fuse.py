@@ -281,7 +281,7 @@ class File(IliasNode):
 
     @staticmethod
     def human2bytes(s):
-        symbols = ('B', 'KB', 'MB', 'GB', 'TB')
+        symbols = ('Bytes', 'KB', 'MB', 'GB', 'TB')
         rex = re.compile(r"\s*([0-9,\.]*)\s*([a-zA-Z]*)\s*", re.UNICODE)
         match = rex.match(s)
         letters = match.group(2)
