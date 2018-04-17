@@ -31,11 +31,10 @@ from errno import *
 import stat
 import argparse
 
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 import locale
 import datetime
 import time
-
 
 @contextmanager
 def setlocale(name):
@@ -44,6 +43,43 @@ def setlocale(name):
         yield locale.setlocale(locale.LC_ALL, name)
     finally:
         locale.setlocale(locale.LC_ALL, saved)
+
+
+def get_user_pass(from_keyring=True, ask=True):
+    """get the username and password. If saved=True, try to fetch them from the
+    system keyring. If ask=True, ask for the password if it is not given"""
+
+    username, password = None, None
+
+    if from_keyring:
+        try:
+            import keyring
+            # Dirty hack: this uses the keyring to save the username as a
+            # password.  This means that we don't need to have any extra config
+            # file. It also means you can't use it with multiple accounts
+            username = keyring.get_password("kit-ilias-fuse", "username")
+            password = keyring.get_password("kit-ilias-fuse", "password")
+        except (ImportError, RuntimeError):
+            logging.info("could not access keyring")
+
+    if ask:
+        username = username or input("Username: ")
+        password = password or getpass.getpass()
+
+    if None in (username, password):
+        raise InvalidCredentialsError("no credentials available")
+
+    return username, password
+
+
+def save_user_pass(username, password):
+    """attempt to save the username and password to the keyring"""
+    with suppress(ImportError, RuntimeError):
+        import keyring
+
+        keyring.set_password("kit-ilias-fuse", "username", username)
+        keyring.set_password("kit-ilias-fuse", "password", password)
+        logging.info("saved login to keyring")
 
 
 class Cache(object):
@@ -119,7 +155,7 @@ class IliasSession(requests.Session):
     Attempts to log in to ILIAS via the Shibboleth Identity provider.
 
     Usage:
-    >>> session = IliasSession(username="your_username") #next you will be prompted for your password
+    >>> session = IliasSession(username="your_username", password=getpass()) #next you will be prompted for your password
     >>> session.get(some_course_url) #use it just like any requests.Session instance
     """
 
@@ -129,10 +165,11 @@ class IliasSession(requests.Session):
         def __init__(self):
             pass
 
-    def __init__(self, cache_timeout, username=None, password=None):
+    def __init__(self, cache_timeout, username, password, login_callback=None):
         super().__init__()
-        self.username = username if username else input("Username: ")
-        self.password = password if password else getpass.getpass()
+        self.username = username
+        self.password = password
+        self.login_callback = login_callback
         self.logger = logging.getLogger(type(self).__name__)
         self.cache_timeout = cache_timeout
         self.login()
@@ -169,6 +206,10 @@ class IliasSession(requests.Session):
         except AttributeError as e:
             raise InvalidCredentialsError(
                 "Username and/or password most likely invalid. (SAML response could not be found.)") from e
+
+        if self.login_callback:
+            self.login_callback(self.username, self.password)
+
         self.post("https://ilias.studium.kit.edu/Shibboleth.sso/SAML2/POST", data={
             "SAMLResponse": saml_response,
             "RelayState": relay_state
@@ -399,7 +440,8 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging._nameToLevel[args.log_level])
 
     cache_timeout_secs = args.cache_timeout * 60
-    session = IliasSession(cache_timeout_secs)
+    session = IliasSession(cache_timeout_secs, *get_user_pass(), login_callback=save_user_pass)
+
     dashboard = IliasDashboard(session)
     cache = Cache(capacity=args.cache, timeout=cache_timeout_secs)
     fuse = FUSE(IliasFS(args.mountpoint, dashboard), args.mountpoint, foreground=args.foreground)
