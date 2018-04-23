@@ -218,7 +218,7 @@ class IliasSession(requests.Session):
     def get_ensure_login(self, url):
         kwargs = {
             "allow_redirects": False,
-            "timeout": 5
+            "timeout": 10
         }
         try:
             resp = self.get(url, **kwargs)
