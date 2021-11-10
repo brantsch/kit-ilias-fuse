@@ -185,7 +185,11 @@ class IliasSession(requests.Session):
             "home_organization_selection": "Mit KIT-Account anmelden"
         })
         jsessionid = self.cookies.get("JSESSIONID")
+        login_page = self.get(session_establishment_response.url)
+        login_page_soup = BeautifulSoup(login_page.text, 'lxml')
+        csrf_token = login_page_soup.find("input", attrs={"name": "csrf_token"})['value']
         login_response = self.post(session_establishment_response.url, data={
+            "csrf_token": csrf_token,
             "j_username": self.username,
             "j_password": self.password,
             "_eventId_proceed": ""
