@@ -4,6 +4,6 @@ certifi==2017.7.27.1
 chardet==3.0.4
 fusepy==2.0.4
 idna==2.6
-lxml==4.6.3
+lxml==4.6.5
 requests==2.20.0
 urllib3==1.24.2
